@@ -229,3 +229,119 @@ Slackの無料プランでも利用可能な機能を活用し、直感的な操
 > ...
 > [新しいセクションを追加]
 ```
+
+## **エラーハンドリング設計**
+
+### **1. タイムアウト制御**
+1. **実行時間制限**
+   - デフォルトタイムアウト：5分
+   - カスタムタイムアウト設定可能
+   - タイムアウト時の強制終了機能
+
+2. **進捗モニタリング**
+   - 30秒ごとの進捗状況確認
+   - メモリ使用量の監視
+   - CPU使用率の監視
+
+3. **インタラプト機能**
+   ```
+   /agent-stop
+   > 実行中のエージェントを停止します
+   > [即時停止] [グレースフル停止]
+   ```
+
+### **2. エラーパターンと対応**
+1. **無限ループ検知**
+   - CPU使用率の継続的な高負荷を検知
+   - メモリ使用量の急激な増加を検知
+   - 同一パターンの処理の繰り返しを検知
+
+2. **応答なし状態の処理**
+   - Cursorプロセスの状態確認
+   - 子プロセスの強制終了
+   - クリーンアップ処理の実行
+
+3. **リカバリー機能**
+   - 最後の安定状態への復帰
+   - 一時ファイルのクリーンアップ
+   - セッション情報の保存
+
+### **3. ユーザー通知**
+1. **エラー通知フォーマット**
+   ```
+   🚨 エラー発生
+   タイプ: 実行タイムアウト
+   エージェント: video-generator
+   経過時間: 5分
+   状態: 応答なし
+   
+   [プロセス終了] [延長] [詳細]
+   ```
+
+2. **アクションオプション**
+   - プロセス強制終了
+   - タイムアウト時間の延長
+   - デバッグ情報の表示
+   - ログの保存
+
+### **4. 実装例**
+```javascript
+class AgentExecutor {
+  constructor(options = {}) {
+    this.timeoutMs = options.timeoutMs || 5 * 60 * 1000; // 5分
+    this.checkIntervalMs = options.checkIntervalMs || 30 * 1000; // 30秒
+    this.maxMemoryMB = options.maxMemoryMB || 1024; // 1GB
+  }
+
+  async executeWithTimeout(command) {
+    const process = spawn('cursor-agent', [...command.split(' ')]);
+    const timer = setTimeout(() => {
+      this.handleTimeout(process);
+    }, this.timeoutMs);
+
+    const monitor = setInterval(() => {
+      this.checkProcessHealth(process);
+    }, this.checkIntervalMs);
+
+    try {
+      return await this.waitForCompletion(process);
+    } finally {
+      clearTimeout(timer);
+      clearInterval(monitor);
+    }
+  }
+
+  handleTimeout(process) {
+    this.notifyTimeout();
+    this.gracefulShutdown(process);
+  }
+
+  async gracefulShutdown(process) {
+    // SIGTERM送信後、一定時間待機してもプロセスが終了しない場合はSIGKILL
+    process.kill('SIGTERM');
+    await sleep(5000);
+    if (this.isProcessRunning(process)) {
+      process.kill('SIGKILL');
+    }
+  }
+}
+```
+
+### **5. 監視メトリクス**
+1. **基本メトリクス**
+   - 実行時間
+   - メモリ使用量
+   - CPU使用率
+   - ディスク使用量
+
+2. **アラート条件**
+   - 実行時間 > タイムアウト設定
+   - メモリ使用量 > 設定上限の80%
+   - CPU使用率 > 90%が1分以上継続
+   - ディスク空き容量 < 1GB
+
+### **6. リカバリープロセス**
+1. エラー発生時の自動保存
+2. バックアップからの復元
+3. エラーレポートの生成
+4. 再実行オプションの提供
