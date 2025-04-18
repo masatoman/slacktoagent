@@ -1,0 +1,7 @@
+tunnel: cursor-agent
+credentials-file: ~/.cloudflared/cert.pem
+
+ingress:
+  - hostname: cursor-agent.tunnel
+    service: http://localhost:3456
+  - service: http_status:404 
