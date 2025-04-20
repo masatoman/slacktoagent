@@ -1,4 +1,4 @@
-const { IncomingWebhook } = require('@slack/webhook');
+import { IncomingWebhook } from '@slack/webhook';
 
 class SlackNotifier {
   constructor(webhookUrl) {
@@ -8,55 +8,57 @@ class SlackNotifier {
     this.webhook = new IncomingWebhook(webhookUrl);
   }
 
+  /**
+   * Slackにメッセージを送信
+   * @param {string} message 送信するメッセージ
+   */
+  async send(message) {
+    try {
+      await this.webhook.send({ text: message });
+    } catch (error) {
+      throw new Error(error.message);
+    }
+  }
+
   async notifyAgentExecution({ agentName, prompt, success, output, error }) {
     const color = success ? '#36a64f' : '#ff0000';
-    const status = success ? '成功 ✅' : '失敗 ❌';
-
-    const blocks = [
-      {
-        type: 'section',
-        text: {
-          type: 'mrkdwn',
-          text: `*エージェント実行結果*\n*エージェント名:* ${agentName}\n*ステータス:* ${status}`
-        }
-      },
-      {
-        type: 'section',
-        text: {
-          type: 'mrkdwn',
-          text: `*プロンプト:*\n\`\`\`${prompt}\`\`\``
-        }
-      }
-    ];
-
-    if (output) {
-      blocks.push({
-        type: 'section',
-        text: {
-          type: 'mrkdwn',
-          text: `*出力結果:*\n\`\`\`${output}\`\`\``
-        }
-      });
-    }
-
-    if (error) {
-      blocks.push({
-        type: 'section',
-        text: {
-          type: 'mrkdwn',
-          text: `*エラー情報:*\n\`\`\`${error}\`\`\``
-        }
-      });
-    }
-
-    await this.webhook.send({
-      blocks,
+    const message = {
       attachments: [{
-        color: color,
-        footer: `実行日時: ${new Date().toLocaleString('ja-JP')}`
+        color,
+        title: `Agent Execution: ${agentName}`,
+        fields: [
+          {
+            title: 'Prompt',
+            value: prompt,
+            short: false
+          },
+          {
+            title: 'Status',
+            value: success ? 'Success' : 'Failed',
+            short: true
+          }
+        ]
       }]
-    });
+    };
+
+    if (success && output) {
+      message.attachments[0].fields.push({
+        title: 'Output',
+        value: output,
+        short: false
+      });
+    }
+
+    if (!success && error) {
+      message.attachments[0].fields.push({
+        title: 'Error',
+        value: error,
+        short: false
+      });
+    }
+
+    await this.send(message);
   }
 }
 
-module.exports = SlackNotifier; 
+export default SlackNotifier; 

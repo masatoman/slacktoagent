@@ -1,51 +1,69 @@
 #!/usr/bin/env node
 
-const { version } = require('../package.json');
-const { executeAgent, supportedAgents } = require('../src/agents');
+import { readFileSync } from 'fs';
+import { fileURLToPath } from 'url';
+import { dirname, join } from 'path';
+import { supportedAgents, executeAgent } from '../src/agents.js';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+
+const packageJson = JSON.parse(readFileSync(join(__dirname, '../package.json'), 'utf8'));
 
 const args = process.argv.slice(2);
+const command = args[0];
 
-// バージョン表示
-if (args.includes('--version') || args.includes('-v')) {
-  console.log(version);
+if (!command || command === '--help' || command === '-h') {
+  console.log(`
+Usage: cursor-agent <command> [options]
+
+Commands:
+  exec <agent> <prompt>  Execute an agent with the given prompt
+  list                   List available agents
+  --version, -v         Show version
+  --help, -h           Show this help message
+
+Examples:
+  cursor-agent exec code-agent "Write a hello world program"
+  cursor-agent list
+`);
   process.exit(0);
 }
 
-// execコマンドの処理
-if (args[0] === 'exec') {
-  const agentIndex = args.indexOf('--agent');
-  const promptIndex = args.indexOf('--prompt');
-  
-  if (agentIndex === -1 || promptIndex === -1) {
-    console.error('Usage: cursor-agent exec --agent <agent-name> --prompt <prompt>');
-    process.exit(1);
-  }
+if (command === '--version' || command === '-v') {
+  console.log(packageJson.version);
+  process.exit(0);
+}
 
-  const agent = args[agentIndex + 1];
-  const prompt = args[promptIndex + 1];
+if (command === 'list') {
+  console.log('Available agents:');
+  supportedAgents.forEach(agent => console.log(`  - ${agent}`));
+  process.exit(0);
+}
+
+if (command === 'exec') {
+  const agent = args[1];
+  const prompt = args[2];
 
   if (!agent || !prompt) {
-    console.error('Both agent and prompt must be provided');
+    console.error('Error: Both agent and prompt are required for exec command');
     process.exit(1);
   }
 
-  // エージェントの実行
-  executeAgent(agent, prompt)
-    .then(result => {
-      console.log(JSON.stringify(result, null, 2));
-      process.exit(0);
-    })
-    .catch(error => {
-      console.error('Error:', error.message);
-      process.exit(1);
-    });
+  if (!supportedAgents.includes(agent)) {
+    console.error(`Error: Unknown agent "${agent}". Use 'cursor-agent list' to see available agents.`);
+    process.exit(1);
+  }
+
+  try {
+    const result = await executeAgent(agent, prompt);
+    console.log(result.output);
+    process.exit(result.success ? 0 : 1);
+  } catch (error) {
+    console.error('Error executing agent:', error.message);
+    process.exit(1);
+  }
 } else {
-  // 不明なコマンドの場合
-  console.log('Unknown command. Available commands:');
-  console.log('  --version, -v    Show version information');
-  console.log('  exec             Execute an agent with a prompt');
-  console.log('                   Usage: cursor-agent exec --agent <agent-name> --prompt <prompt>');
-  console.log('\nSupported agents:');
-  supportedAgents.forEach(agent => console.log(`  - ${agent}`));
+  console.error(`Error: Unknown command "${command}". Use --help for usage information.`);
   process.exit(1);
 } 

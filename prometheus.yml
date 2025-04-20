@@ -1,0 +1,10 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: 'cursor-agent'
+    static_configs:
+      - targets: ['app:3456']  # Dockerネットワーク内のサービス名を使用
+    metrics_path: '/metrics'
+    scheme: 'http' 
