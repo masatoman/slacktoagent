@@ -1,22 +1,10 @@
 import { SERVER_CONFIG, RESPONSE_MESSAGES } from '../config/server.js';
 import logger from './logger.js';
-
-// 権限レベルの定義
-export const PERMISSION_LEVELS = {
-  READ: 'read',
-  EXECUTE: 'execute',
-  ADMIN: 'admin'
-};
-
-// APIキーと権限のマッピング
-const API_KEY_PERMISSIONS = new Map([
-  [process.env.API_KEY, [PERMISSION_LEVELS.READ, PERMISSION_LEVELS.EXECUTE]],
-  [process.env.ADMIN_API_KEY, [PERMISSION_LEVELS.READ, PERMISSION_LEVELS.EXECUTE, PERMISSION_LEVELS.ADMIN]]
-]);
+import { PERMISSION_LEVELS, API_KEY_PERMISSIONS } from '../config/permissions.js';
 
 // APIキーの検証
 export const validateApiKey = (req, res, next) => {
-  const apiKey = req.header(SERVER_CONFIG.auth.apiKeyHeader);
+  const apiKey = req.header('X-API-Key');
 
   if (!apiKey || !API_KEY_PERMISSIONS.has(apiKey)) {
     logger.warn('Invalid API key attempt', {
@@ -25,12 +13,11 @@ export const validateApiKey = (req, res, next) => {
     });
 
     return res.status(401).json({
-      ...RESPONSE_MESSAGES.AUTH_ERROR,
-      message: 'Invalid API key'
+      success: false,
+      error: 'Invalid API key'
     });
   }
 
-  // APIキーに関連付けられた権限をリクエストオブジェクトに追加
   req.permissions = API_KEY_PERMISSIONS.get(apiKey);
   next();
 };
@@ -46,8 +33,8 @@ export const requirePermission = (permission) => {
       });
 
       return res.status(403).json({
-        ...RESPONSE_MESSAGES.AUTH_ERROR,
-        message: 'Insufficient permissions'
+        success: false,
+        error: 'Insufficient permissions'
       });
     }
     next();

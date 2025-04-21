@@ -1,11 +1,13 @@
 import { spawn } from 'child_process';
 import { EventEmitter } from 'events';
 import winston from 'winston';
-import CacheManager from './CacheManager.js';
-import ProcessPoolManager from './ProcessPoolManager.js';
+import CacheManager from './CacheManager.mjs';
+import ProcessPoolManager from './ProcessPoolManager.mjs';
+import { logger } from './logger.mjs';
+import { RESPONSE_MESSAGES } from '../config/server.mjs';
 
 // ロガーの設定
-const logger = winston.createLogger({
+const agentLogger = winston.createLogger({
   level: 'debug',
   format: winston.format.combine(
     winston.format.timestamp(),
@@ -17,7 +19,7 @@ const logger = winston.createLogger({
   ]
 });
 
-class AgentExecutor extends EventEmitter {
+export default class AgentExecutor extends EventEmitter {
   constructor(options = {}) {
     super();
     this.maxMemoryMB = options.maxMemoryMB || 100;
@@ -32,6 +34,7 @@ class AgentExecutor extends EventEmitter {
       maxQueueSize: options.maxQueueSize || 100,
       timeout: this.timeout
     });
+    this.currentProcess = null;
   }
 
   /**
@@ -42,15 +45,19 @@ class AgentExecutor extends EventEmitter {
    * @returns {Promise<string>} 実行結果
    */
   async execute(agent, prompt, context = {}) {
+    if (this.currentProcess) {
+      throw new Error('Another task is currently running');
+    }
+
     try {
       // キャッシュをチェック
       const cachedResult = this.cache.get(agent, prompt, context);
       if (cachedResult) {
-        logger.info('キャッシュから結果を返却', { agent, prompt });
+        agentLogger.info('キャッシュから結果を返却', { agent, prompt });
         return cachedResult;
       }
 
-      logger.info('エージェント実行開始', { agent, prompt });
+      agentLogger.info('エージェント実行開始', { agent, prompt });
       this.startTime = Date.now();
 
       // コマンドの構築
@@ -64,7 +71,7 @@ class AgentExecutor extends EventEmitter {
       // 結果をキャッシュに保存
       this.cache.set(agent, prompt, context, result);
       
-      logger.info('エージェント実行完了', { 
+      agentLogger.info('エージェント実行完了', { 
         agent, 
         executionTime: Date.now() - this.startTime,
         poolStats: this.pool.getStats()
@@ -72,7 +79,7 @@ class AgentExecutor extends EventEmitter {
       
       return result;
     } catch (error) {
-      logger.error('エージェント実行エラー', { 
+      agentLogger.error('エージェント実行エラー', { 
         agent, 
         error: error.message,
         stack: error.stack,
@@ -92,22 +99,26 @@ class AgentExecutor extends EventEmitter {
     let errorOutput = '';
 
     return new Promise((resolve, reject) => {
-      this.process = spawn('cursor-agent', ['--agent', command.split(' ')[1], '--prompt', command.split(' ')[3]]);
+      this.currentProcess = spawn('cursor-agent', [command], {
+        shell: true
+      });
 
       // タイムアウトタイマーの設定
       const timeoutId = setTimeout(() => {
-        this.process.kill('SIGTERM');
+        this.currentProcess.kill('SIGTERM');
         reject(new Error('実行がタイムアウトしました'));
       }, this.timeout);
 
-      this.process.stdout.on('data', (data) => {
+      this.currentProcess.stdout.on('data', (data) => {
         output += data.toString();
         this.emit('output', data.toString());
+        agentLogger.debug('Agent output:', { data: data.toString() });
       });
 
-      this.process.stderr.on('data', (data) => {
+      this.currentProcess.stderr.on('data', (data) => {
         errorOutput += data.toString();
         this.emit('error', data.toString());
+        agentLogger.error('Agent error:', { error: data.toString() });
       });
 
       // メモリ使用量の監視
@@ -116,19 +127,31 @@ class AgentExecutor extends EventEmitter {
         if (memoryUsage > this.maxMemoryMB) {
           clearInterval(memoryCheckInterval);
           clearTimeout(timeoutId);
-          this.process.kill('SIGTERM');
+          this.currentProcess.kill('SIGTERM');
           reject(new Error(`メモリ使用量が制限(${this.maxMemoryMB}MB)を超過しました`));
         }
       }, 100);
 
-      this.process.on('close', (code) => {
+      this.currentProcess.on('close', (code) => {
         clearInterval(memoryCheckInterval);
         clearTimeout(timeoutId);
+        this.currentProcess = null;
         if (code === 0) {
           resolve(output);
         } else {
-          reject(new Error(`プロセスが終了コード ${code} で終了しました。${errorOutput ? '\nエラー: ' + errorOutput : ''}`));
+          reject({
+            ...RESPONSE_MESSAGES.EXECUTION_ERROR,
+            error: errorOutput
+          });
         }
+      });
+
+      this.currentProcess.on('error', (error) => {
+        this.currentProcess = null;
+        reject({
+          ...RESPONSE_MESSAGES.EXECUTION_ERROR,
+          error: error.message
+        });
       });
     });
   }
@@ -137,7 +160,7 @@ class AgentExecutor extends EventEmitter {
    * プロセスの状態を確認
    */
   async checkProcessHealth() {
-    if (!this.process) return;
+    if (!this.currentProcess) return;
 
     try {
       // プロセスの状態を確認
@@ -145,20 +168,20 @@ class AgentExecutor extends EventEmitter {
       const memoryMB = usage.heapUsed / 1024 / 1024;
       const executionTime = Date.now() - this.startTime;
 
-      logger.debug('プロセス状態', {
+      agentLogger.debug('プロセス状態', {
         memoryMB,
         executionTime,
-        pid: this.process.pid
+        pid: this.currentProcess.pid
       });
 
       // メモリ使用量のチェック
       if (memoryMB > this.maxMemoryMB) {
-        logger.warn('メモリ使用量が制限を超過', { memoryMB, limit: this.maxMemoryMB });
+        agentLogger.warn('メモリ使用量が制限を超過', { memoryMB, limit: this.maxMemoryMB });
         this.emit('memory-exceeded', { used: memoryMB, limit: this.maxMemoryMB });
         await this.gracefulShutdown();
       }
     } catch (error) {
-      logger.error('プロセス監視エラー', { error: error.message });
+      agentLogger.error('プロセス監視エラー', { error: error.message });
     }
   }
 
@@ -166,7 +189,7 @@ class AgentExecutor extends EventEmitter {
    * タイムアウト時の処理
    */
   async handleTimeout() {
-    logger.warn('実行がタイムアウト', { 
+    agentLogger.warn('実行がタイムアウト', { 
       executionTime: Date.now() - this.startTime 
     });
     this.emit('timeout');
@@ -177,22 +200,22 @@ class AgentExecutor extends EventEmitter {
    * プロセスの正常終了を試みる
    */
   async gracefulShutdown() {
-    if (!this.process) return;
+    if (!this.currentProcess) return;
 
     try {
       // SIGTERMを送信
-      this.process.kill('SIGTERM');
+      this.currentProcess.kill('SIGTERM');
       
       // 5秒待機
       await new Promise(resolve => setTimeout(resolve, 5000));
       
       // プロセスが終了していない場合はSIGKILL
       if (this.isProcessRunning()) {
-        logger.warn('プロセスが応答しないためSIGKILLを送信');
-        this.process.kill('SIGKILL');
+        agentLogger.warn('プロセスが応答しないためSIGKILLを送信');
+        this.currentProcess.kill('SIGKILL');
       }
     } catch (error) {
-      logger.error('プロセス終了エラー', { error: error.message });
+      agentLogger.error('プロセス終了エラー', { error: error.message });
     }
   }
 
@@ -200,7 +223,7 @@ class AgentExecutor extends EventEmitter {
    * プロセスが実行中かどうかを確認
    */
   isProcessRunning() {
-    return this.process && !this.process.killed;
+    return this.currentProcess && !this.currentProcess.killed;
   }
 
   /**
@@ -211,26 +234,47 @@ class AgentExecutor extends EventEmitter {
       clearTimeout(this.timer);
       this.timer = null;
     }
+
     if (this.monitor) {
       clearInterval(this.monitor);
       this.monitor = null;
     }
-    this.process = null;
+
+    if (this.currentProcess) {
+      this.currentProcess.kill('SIGTERM');
+      this.currentProcess = null;
+    }
   }
 
   /**
-   * コマンドを構築
+   * コマンドを構築する
    */
   buildCommand(agent, prompt, context) {
-    const contextArg = context ? `--context '${JSON.stringify(context)}'` : '';
-    return `exec --agent "${agent}" ${contextArg} --prompt "${prompt}"`;
+    return `${agent} "${prompt}" ${JSON.stringify(context)}`;
   }
 
+  /**
+   * プロセスを強制終了する
+   */
   kill() {
-    if (this.process) {
-      this.process.kill('SIGTERM');
+    if (this.currentProcess) {
+      this.currentProcess.kill('SIGKILL');
+      this.currentProcess = null;
     }
   }
-}
 
-export default AgentExecutor; 
+  /**
+   * プロセスが実行中かどうかを返す
+   */
+  isRunning() {
+    return !!this.currentProcess;
+  }
+
+  /**
+   * プロセスを停止する
+   */
+  async stop() {
+    await this.gracefulShutdown();
+    this.cleanup();
+  }
+} 
